@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "jltrench.textify",
+  "name": "Textify",
+  "version": "0.1.0",
+  "author": "jltrench",
+  "license": "MIT",
+  "description": "Private, local OCR for any region of your screen. Extract text and copy it instantly.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "BarWidget.qml" },
+  "barWidget": {
+    "displayName": "Textify",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

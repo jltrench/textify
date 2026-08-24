@@ -1,0 +1,5 @@
+/native/target/
+/bin/
+*.qmlc
+*.jsc
+.DS_Store
