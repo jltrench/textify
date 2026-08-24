@@ -1,27 +1,30 @@
 ID := jltrench.textify
+SOURCE_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 PLUGIN_DIR := $(HOME)/.config/omarchy/plugins/$(ID)
 QMLLINT := $(shell command -v qmllint || echo /usr/lib/qt6/bin/qmllint)
 
 .PHONY: build install validate lint test remove clean
 
 build:
-	cargo build --release --manifest-path native/Cargo.toml
+	cargo build --release --manifest-path "$(SOURCE_DIR)/native/Cargo.toml"
 
-## Build the binary and sync everything into the Omarchy plugin folder.
+## Build the binary and sync it into the Omarchy plugin folder.
 install: build
-	@mkdir -p $(PLUGIN_DIR)/bin
-	cp manifest.json BarWidget.qml Panel.qml icon.svg preview.png README.md LICENSE $(PLUGIN_DIR)/
-	cp native/target/release/textify $(PLUGIN_DIR)/bin/
+	@mkdir -p "$(PLUGIN_DIR)/bin"
+	@if [ "$(SOURCE_DIR)" != "$(PLUGIN_DIR)" ]; then \
+		cp manifest.json BarWidget.qml Panel.qml icon.svg preview.png README.md LICENSE "$(PLUGIN_DIR)/"; \
+	fi
+	cp "$(SOURCE_DIR)/native/target/release/textify" "$(PLUGIN_DIR)/bin/textify"
 	@echo "Installed $(ID) -> $(PLUGIN_DIR)"
 
 validate:
-	omarchy plugin validate $(PLUGIN_DIR)
+	omarchy plugin validate "$(PLUGIN_DIR)"
 
 lint:
 	$(QMLLINT) -I "$${OMARCHY_PATH}/shell" BarWidget.qml Panel.qml
 
 test:
-	cargo test --manifest-path native/Cargo.toml
+	cargo test --manifest-path "$(SOURCE_DIR)/native/Cargo.toml"
 
 remove:
 	@if omarchy plugin remove $(ID) --yes; then \
@@ -31,4 +34,4 @@ remove:
 	fi
 
 clean:
-	cargo clean --manifest-path native/Cargo.toml
+	cargo clean --manifest-path "$(SOURCE_DIR)/native/Cargo.toml"

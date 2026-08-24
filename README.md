@@ -1,7 +1,7 @@
 # Textify
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.1.0-blue)
+![Version](https://img.shields.io/badge/version-0.1.1-blue)
 
 Native Omarchy Quickshell bar widget to extract text from any region of your
 screen and copy it to the clipboard. Select a region (or grab the whole
