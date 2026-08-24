@@ -10,7 +10,7 @@ build:
 ## Build the binary and sync everything into the Omarchy plugin folder.
 install: build
 	@mkdir -p $(PLUGIN_DIR)/bin
-	cp manifest.json BarWidget.qml Panel.qml icon.svg README.md LICENSE $(PLUGIN_DIR)/
+	cp manifest.json BarWidget.qml Panel.qml icon.svg preview.png README.md LICENSE $(PLUGIN_DIR)/
 	cp native/target/release/textify $(PLUGIN_DIR)/bin/
 	@echo "Installed $(ID) -> $(PLUGIN_DIR)"
 

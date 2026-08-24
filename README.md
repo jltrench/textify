@@ -8,6 +8,8 @@ screen and copy it to the clipboard. Select a region (or grab the whole
 screen), and the text lands on your clipboard instantly — no network, no
 cloud, fully local.
 
+![Textify preview — local OCR panel with capture, confidence, copy, and history](preview.png)
+
 Powered by [tesseract](https://github.com/tesseract-ocr/tesseract) with
 `slurp`/`grim` (Wayland capture) and ImageMagick (pre-processing).
 
