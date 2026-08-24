@@ -32,6 +32,15 @@ Panel {
   property var installedLangs: []
   property int cursorIndex: 0
 
+  readonly property int maxProcessOutputChars: 128 * 1024
+  readonly property int maxTextChars: 32 * 1024
+  readonly property int maxFieldChars: 256
+  readonly property int maxDiagnosticChars: 512
+  readonly property int maxLanguageCount: 128
+  readonly property int ocrTimeoutMs: 420000
+  readonly property int shortProcessTimeoutMs: 20000
+  readonly property int copyTimeoutMs: 15000
+
   readonly property color ink: root.barForeground
   readonly property color secondaryInk: Util.alpha(root.ink, 0.68)
   readonly property color quietInk: Util.alpha(root.ink, 0.52)
@@ -60,6 +69,27 @@ Panel {
   function setStatus(text, tone) {
     root.statusText = text
     root.statusTone = tone || "neutral"
+  }
+
+  function boundedText(value, limit) {
+    var text = String(value || "")
+    return text.length > limit ? text.slice(0, limit) : text
+  }
+
+  function collectProcessLine(process, line) {
+    if (process.outputTooLarge) return
+    var value = String(line || "") + "\n"
+    if (process.output.length + value.length > root.maxProcessOutputChars) {
+      process.outputTooLarge = true
+      if (process.running) process.signal(9)
+      return
+    }
+    process.output += value
+  }
+
+  function logDiagnostic(prefix, line) {
+    var diagnostic = root.boundedText(String(line || "").trim(), root.maxDiagnosticChars)
+    if (diagnostic !== "") console.warn(prefix + ":", diagnostic)
   }
 
   function languageName(code) {
@@ -109,9 +139,15 @@ Panel {
 
   function copyText(text) {
     if (!text || copyProc.running) return
-    root.pendingCopyText = String(text)
+    var value = String(text)
+    if (value.length > root.maxTextChars) {
+      root.setStatus("Text is too large to copy", "error")
+      return
+    }
+    root.pendingCopyText = value
     root.setStatus("Copying text", "busy")
-    copyProc.command = [root.binPath, "copy", text]
+    copyProc.stdinEnabled = true
+    copyProc.command = [root.binPath, "copy"]
     copyProc.running = true
   }
 
@@ -137,6 +173,9 @@ Panel {
 
   function pushHistory(entry) {
     var h = root.history.slice()
+    entry.text = root.boundedText(entry.text, root.maxTextChars)
+    entry.lang = root.boundedText(entry.lang, root.maxFieldChars)
+    entry.when = root.boundedText(entry.when, root.maxFieldChars)
     h.unshift(entry)
     if (h.length > root.maxHistory) h = h.slice(0, root.maxHistory)
     root.history = h
@@ -234,14 +273,53 @@ Panel {
   Process {
     id: langProc
 
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        try {
-          var parsed = JSON.parse(String(text))
-          root.detectedLayout = parsed.layout || ""
-          root.detectedLang = parsed.lang || ""
-        } catch (e) {}
+    property string output: ""
+    property bool outputTooLarge: false
+    property bool timedOut: false
+
+    stdout: SplitParser {
+      splitMarker: "\n"
+      onRead: function(line) { root.collectProcessLine(langProc, line) }
+    }
+
+    stderr: SplitParser {
+      splitMarker: "\n"
+      onRead: function(line) { root.logDiagnostic("Textify language", line) }
+    }
+
+    onStarted: {
+      langProc.output = ""
+      langProc.outputTooLarge = false
+      langProc.timedOut = false
+      langTimeout.restart()
+    }
+
+    onExited: {
+      langTimeout.stop()
+      if (langProc.timedOut || langProc.outputTooLarge) {
+        root.detectedLayout = ""
+        root.detectedLang = ""
+        return
+      }
+      try {
+        var parsed = JSON.parse(langProc.output.trim())
+        root.detectedLayout = root.boundedText(parsed.layout || "", root.maxFieldChars)
+        root.detectedLang = root.boundedText(parsed.lang || "", root.maxFieldChars)
+      } catch (e) {
+        root.detectedLayout = ""
+        root.detectedLang = ""
+      }
+    }
+  }
+
+  Timer {
+    id: langTimeout
+    interval: root.shortProcessTimeoutMs
+    repeat: false
+    onTriggered: {
+      if (langProc.running) {
+        langProc.timedOut = true
+        langProc.signal(9)
       }
     }
   }
@@ -250,74 +328,157 @@ Panel {
     id: ocrProc
 
     property string mode: "region"
+    property string output: ""
+    property bool outputTooLarge: false
+    property bool timedOut: false
 
-    onStarted: root.busy = true
-
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var raw = String(text || "").trim()
-        var parsed
-        try {
-          parsed = JSON.parse(raw)
-        } catch (e) {
-          root.busy = false
-          root.setStatus("OCR could not return a result", "error")
-          console.error("Textify debug - parse exception:", e, "| head:", raw.slice(0, 120))
-          return
-        }
-        root.busy = false
-        if (parsed.error) {
-          root.setStatus(parsed.error, "error")
-          return
-        }
-        root.lastText = parsed.text || ""
-        root.lastLang = parsed.lang || ""
-        root.lastCopied = parsed.copied || false
-        root.lastConfidence = parsed.confidence || 0
-        if (root.lastText.trim() === "") {
-          root.setStatus("No text found in that capture", "warning")
-        } else if (root.lastConfidence < 40) {
-          // Low confidence: the region was likely icons/graphics, not text.
-          root.setStatus("Low confidence · the capture may contain graphics", "warning")
-        } else {
-          root.setStatus(root.lastCopied ? "Copied to clipboard" : "Text ready to copy", "success")
-          root.pushHistory({
-            text: root.lastText,
-            lang: root.lastLang,
-            when: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-          })
-        }
-      }
+    onStarted: {
+      root.busy = true
+      ocrProc.output = ""
+      ocrProc.outputTooLarge = false
+      ocrProc.timedOut = false
+      ocrTimeout.restart()
     }
 
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var diagnostic = String(text || "").trim()
-        if (diagnostic !== "") console.warn("Textify:", diagnostic)
-      }
+    stdout: SplitParser {
+      splitMarker: "\n"
+      onRead: function(line) { root.collectProcessLine(ocrProc, line) }
+    }
+
+    stderr: SplitParser {
+      splitMarker: "\n"
+      onRead: function(line) { root.logDiagnostic("Textify OCR", line) }
     }
 
     onExited: function(exitCode) {
+      ocrTimeout.stop()
       root.busy = false
-      if (exitCode !== 0 && root.statusTone === "busy")
+      if (ocrProc.timedOut) {
+        root.setStatus("OCR timed out · try a smaller capture", "error")
+        return
+      }
+      if (ocrProc.outputTooLarge) {
+        root.setStatus("OCR result exceeded the safe limit", "error")
+        return
+      }
+
+      var raw = ocrProc.output.trim()
+      var parsed
+      try {
+        parsed = JSON.parse(raw)
+      } catch (e) {
+        root.setStatus("OCR could not return a result", "error")
+        if (raw !== "") console.error("Textify OCR output:", root.boundedText(raw, root.maxDiagnosticChars))
+        return
+      }
+
+      if (parsed.error) {
+        root.setStatus(root.boundedText(parsed.error, root.maxFieldChars), "error")
+        return
+      }
+      if (exitCode !== 0) {
         root.setStatus("Capture failed · check the OCR tools", "error")
+        return
+      }
+
+      var resultText = String(parsed.text || "")
+      if (resultText.length > root.maxTextChars) {
+        root.setStatus("OCR result exceeded the safe limit", "error")
+        return
+      }
+      root.lastText = resultText
+      root.lastLang = root.boundedText(parsed.lang || "", root.maxFieldChars)
+      root.lastCopied = parsed.copied === true
+      var confidence = Number(parsed.confidence)
+      root.lastConfidence = isFinite(confidence) ? Math.max(0, Math.min(100, confidence)) : 0
+      if (root.lastText.trim() === "") {
+        root.setStatus("No text found in that capture", "warning")
+      } else if (root.lastConfidence < 40) {
+        // Low confidence: the region was likely icons/graphics, not text.
+        root.setStatus("Low confidence · the capture may contain graphics", "warning")
+      } else {
+        root.setStatus(root.lastCopied ? "Copied to clipboard" : "Text ready to copy", "success")
+        root.pushHistory({
+          text: root.lastText,
+          lang: root.lastLang,
+          when: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        })
+      }
+    }
+  }
+
+  Timer {
+    id: ocrTimeout
+    interval: root.ocrTimeoutMs
+    repeat: false
+    onTriggered: {
+      if (ocrProc.running) {
+        ocrProc.timedOut = true
+        ocrProc.signal(9)
+      }
     }
   }
 
   Process {
     id: langsProc
 
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        try {
-          var langs = JSON.parse(String(text))
-          root.installedLangs = langs || []
-        } catch (e) {
+    property string output: ""
+    property bool outputTooLarge: false
+    property bool timedOut: false
+
+    stdout: SplitParser {
+      splitMarker: "\n"
+      onRead: function(line) { root.collectProcessLine(langsProc, line) }
+    }
+
+    stderr: SplitParser {
+      splitMarker: "\n"
+      onRead: function(line) { root.logDiagnostic("Textify languages", line) }
+    }
+
+    onStarted: {
+      langsProc.output = ""
+      langsProc.outputTooLarge = false
+      langsProc.timedOut = false
+      langsTimeout.restart()
+    }
+
+    onExited: {
+      langsTimeout.stop()
+      if (langsProc.timedOut || langsProc.outputTooLarge) {
+        root.installedLangs = []
+        return
+      }
+      try {
+        var parsed = JSON.parse(langsProc.output.trim())
+        if (!Array.isArray(parsed) || parsed.length > root.maxLanguageCount) {
           root.installedLangs = []
+          return
         }
+        var safe = []
+        for (var i = 0; i < parsed.length; i++) {
+          var code = String(parsed[i] || "")
+          if (code.length === 0 || code.length > root.maxFieldChars) {
+            root.installedLangs = []
+            return
+          }
+          safe.push(code)
+        }
+        root.installedLangs = safe
+      } catch (e) {
+        root.installedLangs = []
+      }
+    }
+  }
+
+  Timer {
+    id: langsTimeout
+    interval: root.shortProcessTimeoutMs
+    repeat: false
+    onTriggered: {
+      if (langsProc.running) {
+        langsProc.timedOut = true
+        langsProc.signal(9)
       }
     }
   }
@@ -325,20 +486,57 @@ Panel {
   Process {
     id: copyProc
 
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var diagnostic = String(text || "").trim()
-        if (diagnostic !== "") console.warn("Textify copy:", diagnostic)
-      }
+    stdinEnabled: true
+    property string output: ""
+    property bool outputTooLarge: false
+    property bool timedOut: false
+
+    stdout: SplitParser {
+      splitMarker: "\n"
+      onRead: function(line) { root.collectProcessLine(copyProc, line) }
+    }
+
+    stderr: SplitParser {
+      splitMarker: "\n"
+      onRead: function(line) { root.logDiagnostic("Textify copy", line) }
+    }
+
+    onStarted: {
+      copyProc.output = ""
+      copyProc.outputTooLarge = false
+      copyProc.timedOut = false
+      copyTimeout.restart()
+      copyProc.write(root.pendingCopyText)
+      Qt.callLater(function() {
+        if (copyProc.running) copyProc.stdinEnabled = false
+      })
     }
 
     onExited: function(exitCode) {
+      copyTimeout.stop()
+      var copiedLatest = root.pendingCopyText === root.lastText
+      root.pendingCopyText = ""
+      if (copyProc.timedOut || copyProc.outputTooLarge) {
+        root.setStatus("Copy timed out · text was not sent", "error")
+        return
+      }
       if (exitCode === 0) {
-        if (root.pendingCopyText === root.lastText) root.lastCopied = true
+        if (copiedLatest) root.lastCopied = true
         root.setStatus("Copied to clipboard", "success")
       } else {
         root.setStatus("Could not copy the text", "error")
+      }
+    }
+  }
+
+  Timer {
+    id: copyTimeout
+    interval: root.copyTimeoutMs
+    repeat: false
+    onTriggered: {
+      if (copyProc.running) {
+        copyProc.timedOut = true
+        copyProc.signal(9)
       }
     }
   }
@@ -721,7 +919,7 @@ Panel {
                   required property var modelData
                   required property int index
                   Accessible.role: Accessible.Button
-                  Accessible.name: "Copy capture: " + String(modelData.text || "").replace(/\s+/g, " ").trim()
+                  Accessible.name: "Copy capture: " + root.boundedText(String(modelData.text || "").replace(/\s+/g, " ").trim(), root.maxFieldChars)
                   Accessible.description: "Copy this saved capture"
                   width: historyColumn.width
                   height: Style.space(52)

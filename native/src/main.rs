@@ -11,13 +11,15 @@
 //!   textify region [--lang LANG] [--copy] [--json]   Select a region and OCR it
 //!   textify full  [--lang LANG] [--copy] [--json]    OCR the whole screen
 //!   textify file <path> [--lang LANG] [--json]       OCR an existing image file
-//!   textify langs                                      List installed languages
+//!   textify copy                                      Read clipboard text from stdin
+//!   textify langs                                     List installed languages
 //!   textify --version
 //!
 //! Security: every external binary is resolved from PATH and invoked with a
 //! fixed argument list (no shell interpolation). Temp files live in a private
 //! directory under $XDG_RUNTIME_DIR or /tmp and are removed on exit. No
-//! elevated privileges.
+//! elevated privileges. Clipboard text is accepted through stdin rather than
+//! argv so it is not exposed through process listings.
 
 mod engine;
 
@@ -109,9 +111,15 @@ fn cmd_langs() {
 }
 
 fn cmd_copy(raw: &[String]) {
-    let text = raw.join(" ");
+    if !raw.is_empty() {
+        fail("usage: printf '%s' \"text\" | textify copy");
+    }
+    let text = match engine::read_stdin_limited() {
+        Ok(text) => text,
+        Err(error) => fail(&error),
+    };
     if text.trim().is_empty() {
-        fail("usage: textify copy <text>");
+        fail("usage: printf '%s' \"text\" | textify copy");
     }
     match engine::copy_to_clipboard(&text) {
         Ok(()) => println!("{}", serde_json::json!({ "copied": true })),

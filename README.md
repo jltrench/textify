@@ -32,8 +32,9 @@ Powered by [tesseract](https://github.com/tesseract-ocr/tesseract) with
 - Omarchy 4 with its Quickshell bar
 - `slurp`, `grim` (Wayland screen capture)
 - `tesseract` (OCR engine) with at least the `eng` language data
-- `magick` and `identify` (ImageMagick, for pre-processing — optional, falls
-  back to raw)
+- `identify` (ImageMagick, required to enforce image bounds)
+- `magick` (ImageMagick, optional pre-processing — falls back to the validated
+  raw image)
 - `wl-copy` (Wayland clipboard)
 
 All of these are present on a standard Omarchy install. For other languages,
@@ -89,7 +90,7 @@ The same engine is usable standalone:
 ~/.config/omarchy/plugins/jltrench.textify/bin/textify full
 ~/.config/omarchy/plugins/jltrench.textify/bin/textify file ~/Pictures/photo.png
 ~/.config/omarchy/plugins/jltrench.textify/bin/textify langs
-~/.config/omarchy/plugins/jltrench.textify/bin/textify copy "some text"
+printf '%s' "some text" | ~/.config/omarchy/plugins/jltrench.textify/bin/textify copy
 ```
 
 `--json` prints `{"text": "...", "lang": "eng", "copied": true, "source": "screen"}`.
@@ -101,8 +102,13 @@ request elevated privileges, open network connections, upload images, or
 invoke a shell. It launches only the documented local tools above, plus
 `hyprctl`/`fcitx5-remote` for best-effort language detection. Screen captures
 and intermediate images are kept in private temporary directories and
-removed when the OCR process exits. The optional `file` command reads only
-the path explicitly supplied by the user.
+removed when the OCR process exits. Clipboard text is sent to `wl-copy` over
+stdin, never as a process argument. The engine enforces bounded runtimes and
+output, a 32 KiB text/result limit, a 64 MiB image limit, 10,000 px dimensions,
+50 megapixels, bounded language/region/path fields, and ImageMagick plus OS
+resource limits. The panel also bounds process output and history before QML
+retains it. The optional `file` command reads only the path explicitly
+supplied by the user.
 
 ## Development
 
