@@ -371,6 +371,69 @@ fn run_command(
     })
 }
 
+/// Run a stdin-only helper whose normal behavior is to daemonize after
+/// receiving its payload (notably `wl-copy`). Its descendants can inherit the
+/// parent's stdout/stderr descriptors, so piping those streams would make
+/// reader threads wait for EOF forever after the direct child exits.
+fn run_stdin_only(
+    command: &Path,
+    args: &[&str],
+    stdin_data: &[u8],
+    timeout: Duration,
+) -> Result<ExitStatus, String> {
+    let mut builder = Command::new(command);
+    builder
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    apply_process_limits(&mut builder, timeout);
+    let mut child = builder
+        .spawn()
+        .map_err(|error| format!("cannot run {}: {error}", command.display()))?;
+
+    let mut stdin = match child.stdin.take() {
+        Some(stdin) => stdin,
+        None => {
+            terminate_child(&mut child);
+            let _ = child.wait();
+            return Err(format!("{} stdin unavailable", command_name(command)));
+        }
+    };
+    let data = stdin_data.to_vec();
+    let stdin_thread = thread::spawn(move || stdin.write_all(&data));
+
+    let deadline = Instant::now() + timeout;
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() >= deadline => {
+                timed_out = true;
+                terminate_child(&mut child);
+                break child
+                    .wait()
+                    .map_err(|error| format!("cannot reap {}: {error}", command_name(command)))?;
+            }
+            Ok(None) => thread::sleep(PROCESS_POLL_INTERVAL),
+            Err(error) => {
+                terminate_child(&mut child);
+                let _ = child.wait();
+                return Err(format!(
+                    "cannot wait for {}: {error}",
+                    command_name(command)
+                ));
+            }
+        }
+    };
+
+    let _ = stdin_thread.join();
+    if timed_out {
+        return Err(format!("{} timed out", command_name(command)));
+    }
+    Ok(status)
+}
+
 fn run_text(
     command: &Path,
     args: &[&str],
@@ -889,16 +952,9 @@ fn ocr_confidence(path: &str, lang: &str) -> Result<f64, String> {
 pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
     validate_text_bytes(text, "clipboard text")?;
     let wl_copy = which("wl-copy")?;
-    let output = run_command(
-        &wl_copy,
-        &[],
-        Some(text.as_bytes()),
-        CLIPBOARD_TIMEOUT,
-        1024,
-        MAX_COMMAND_STDERR_BYTES,
-    )?;
-    if !output.status.success() {
-        return Err(command_failure(&wl_copy, output.status, &output.stderr));
+    let status = run_stdin_only(&wl_copy, &[], text.as_bytes(), CLIPBOARD_TIMEOUT)?;
+    if !status.success() {
+        return Err(format!("wl-copy exited with {status}"));
     }
     Ok(())
 }
@@ -1050,5 +1106,20 @@ mod tests {
         assert!(result
             .err()
             .is_some_and(|error| error.contains("timed out")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stdin_only_helper_does_not_wait_for_inherited_descriptors() {
+        let started = Instant::now();
+        let status = run_stdin_only(
+            Path::new("/bin/sh"),
+            &["-c", "cat >/dev/null; (sleep 2) & exit 0"],
+            b"clipboard text",
+            Duration::from_secs(1),
+        )
+        .expect("stdin-only helper should exit");
+        assert!(status.success());
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 }
