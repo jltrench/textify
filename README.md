@@ -49,7 +49,8 @@ omarchy bar move jltrench.textify --section right
 
 The marketplace install clones the repository; `make install` builds the Rust
 binary into the plugin folder (requires `cargo`/`rustc` at build time only).
-No sudo needed; everything lives in `~/.config/omarchy/plugins/jltrench.textify/`.
+No elevated privileges are required; everything lives in
+`~/.config/omarchy/plugins/jltrench.textify/`.
 
 ### From this repository
 
